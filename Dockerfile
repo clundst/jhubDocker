@@ -1,10 +1,17 @@
-FROM ubuntu:18.04
+FROM ubuntu:20.04
 
-## NOTE: This is a default and be overridden by chartpress using the
-##       chartpress.yaml configuration
-ARG JUPYTERHUB_VERSION=1.1.*
+# VULN_SCAN_TIME=2021-08-27_01:05:08
 
-RUN apt-get update && \
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8
+
+# psycopg2-binary in requirements.txt is not compiled for linux/arm64
+# TODO: Use build stages to compile psycopg2-binary separately instead of
+# bloating the image size
+RUN EXTRA_APT_PACKAGES=; \
+    if [ `uname -m` != 'x86_64' ]; then EXTRA_APT_PACKAGES=libpq-dev; fi; \
+    apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
       git \
       vim \
@@ -20,18 +27,13 @@ RUN apt-get update && \
       sqlite3 \
       curl \
       dnsutils \
-      $(bash -c 'if [[ $JUPYTERHUB_VERSION == "git"* ]]; then \
-        # workaround for https://bugs.launchpad.net/ubuntu/+source/nodejs/+bug/1794589
-        echo nodejs=8.10.0~dfsg-2ubuntu0.2 nodejs-dev=8.10.0~dfsg-2ubuntu0.2 npm; \
-      fi') \
+      $EXTRA_APT_PACKAGES \
       && \
-    apt-get purge && apt-get clean
+    rm -rf /var/lib/apt/lists/*
 
 ARG NB_USER=jovyan
 ARG NB_UID=1000
 ARG HOME=/home/jovyan
-
-ENV LANG C.UTF-8
 
 RUN adduser --disabled-password \
     --gecos "Default user" \
@@ -39,16 +41,21 @@ RUN adduser --disabled-password \
     --home ${HOME} \
     --force-badname \
     ${NB_USER}
-
-RUN python3 -m pip install --upgrade --no-cache setuptools pip
+COPY coffea_casa_trans.png /usr/local/share/jupyterhub/static/images/coffea_casa_trans.png
 COPY requirements.txt /tmp/requirements.txt
-RUN PYCURL_SSL_LIBRARY=openssl pip3 install --no-cache-dir \
-         -r /tmp/requirements.txt \
-         $(bash -c 'if [[ $JUPYTERHUB_VERSION == "git"* ]]; then \
-            echo ${JUPYTERHUB_VERSION}; \
-          else \
-            echo jupyterhub==${JUPYTERHUB_VERSION}; \
-          fi')
+RUN pip3 install --upgrade --no-cache-dir \
+        setuptools \
+        pip
+RUN PYCURL_SSL_LIBRARY=openssl \
+    pip install --no-cache-dir \
+        -r /tmp/requirements.txt
+
+# Support overriding a package or two through passed docker --build-args.
+# ARG PIP_OVERRIDES="jupyterhub==1.3.0 git+https://github.com/consideratio/kubespawner.git"
+ARG PIP_OVERRIDES=
+RUN if test -n "$PIP_OVERRIDES"; then \
+        pip install --no-cache-dir $PIP_OVERRIDES; \
+    fi
 
 WORKDIR /srv/jupyterhub
 
@@ -65,5 +72,4 @@ ARG PIP_TOOLS=
 RUN test -z "$PIP_TOOLS" || pip install --no-cache pip-tools==$PIP_TOOLS
 
 USER ${NB_USER}
-CMD ["jupyterhub", "--config", "/etc/jupyterhub/jupyterhub_config.py"]
-
+CMD ["jupyterhub", "--config", "/usr/local/etc/jupyterhub/jupyterhub_config.py"]
